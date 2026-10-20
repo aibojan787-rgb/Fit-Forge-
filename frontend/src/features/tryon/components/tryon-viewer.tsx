@@ -1,0 +1,148 @@
+import { useEffect, useState } from 'react'
+import { AlertCircle, RefreshCw } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Progress } from '@/components/ui/progress'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Notice } from '@/components/layout/notice'
+import type { Avatar } from '@/features/avatar/types'
+import { useTryOnLook } from '@/features/tryon/api/use-tryon'
+import type { TryOnGarment, TryOnOutcome, TryOnProgress } from '@/features/tryon/types'
+
+type TryOnViewerProps = {
+  avatar: Avatar
+  items: readonly TryOnGarment[]
+}
+
+type ViewerState = {
+  key: string
+  outcome?: TryOnOutcome
+  error?: string
+}
+
+// The only try-on component screens use. It renders whatever the active provider returns.
+export function TryOnViewer({ avatar, items }: TryOnViewerProps) {
+  const look = useTryOnLook()
+  const { mutate } = look
+  const [state, setState] = useState<ViewerState | null>(null)
+  const [progress, setProgress] = useState<TryOnProgress | null>(null)
+  const [attempt, setAttempt] = useState(0)
+
+  const key = `${avatar.id}|${items.map((item) => item.id).join(',')}|${attempt}`
+
+  useEffect(() => {
+    if (items.length === 0) return
+
+    const controller = new AbortController()
+    setProgress(null)
+    mutate(
+      {
+        avatar,
+        garments: items,
+        signal: controller.signal,
+        onProgress: (update) => {
+          if (!controller.signal.aborted) setProgress(update)
+        },
+      },
+      {
+        onSuccess: (outcome) => {
+          if (!controller.signal.aborted) setState({ key, outcome })
+        },
+        onError: (error) => {
+          if (controller.signal.aborted) return
+          setState({
+            key,
+            error: error instanceof Error ? error.message : 'Something went wrong.',
+          })
+        },
+      },
+    )
+
+    return () => controller.abort()
+    // `key` already covers avatar and items. Using `items` directly would re-run on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, mutate])
+
+  if (items.length === 0) {
+    return (
+      <div className="flex aspect-[3/4] items-center justify-center rounded-2xl border border-dashed border-navy/30 bg-muted p-8 text-center text-muted-foreground">
+        Pick at least one piece to see it on you.
+      </div>
+    )
+  }
+
+  const current = state?.key === key ? state : null
+
+  return (
+    <div className="space-y-4">
+      <div className="relative aspect-[3/4] overflow-hidden rounded-2xl bg-beige">
+        {current?.outcome ? (
+          <img
+            src={current.outcome.imageUrl}
+            alt={`You wearing ${items.map((item) => item.name).join(', ')}`}
+            className="size-full object-cover"
+          />
+        ) : null}
+
+        {!current ? (
+          <div className="flex size-full flex-col items-center justify-center gap-4 p-8">
+            <Skeleton className="absolute inset-0 rounded-none" />
+            <div className="relative w-full max-w-xs space-y-3 text-center">
+              <Progress value={progress ? (progress.step / progress.total) * 100 : 5} aria-label="Try-on progress" />
+              <p className="text-sm text-navy" role="status">
+                {progress
+                  ? `Piece ${progress.step} of ${progress.total}: ${progress.message}`
+                  : 'Starting the try-on'}
+              </p>
+            </div>
+          </div>
+        ) : null}
+
+        {current?.error ? (
+          <div className="flex size-full flex-col items-center justify-center gap-4 p-8 text-center">
+            <AlertCircle className="size-8 text-brick" aria-hidden="true" />
+            <p className="text-sm text-foreground">The try-on could not be shown.</p>
+            <Button variant="outline" onClick={() => setAttempt((count) => count + 1)}>
+              <RefreshCw className="size-4" aria-hidden="true" />
+              Try again
+            </Button>
+          </div>
+        ) : null}
+      </div>
+
+      {current?.outcome ? <TryOnNotice outcome={current.outcome} /> : null}
+
+      {current?.outcome ? (
+        <div className="flex justify-end">
+          <Button variant="ghost" size="sm" onClick={() => setAttempt((count) => count + 1)}>
+            <RefreshCw className="size-4" aria-hidden="true" />
+            Run again
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function TryOnNotice({ outcome }: { outcome: TryOnOutcome }) {
+  if (outcome.fallbackReason) {
+    return (
+      <Notice tone="warning" title="Free try-on is unavailable right now">
+        {outcome.fallbackReason}
+      </Notice>
+    )
+  }
+  if (outcome.providerId === 'mock') {
+    return (
+      <Notice tone="info" title="Demo preview">
+        The free AI try-on is turned off. Set VITE_TRYON_PROVIDER=idm-vton in .env.local to try it.
+      </Notice>
+    )
+  }
+  return (
+    <Notice tone="info" title="Generated by a free AI service">
+      {outcome.fromCache
+        ? 'Loaded from this device. No new request was sent.'
+        : 'Results are saved on this device so the demo does not repeat the same request.'}
+    </Notice>
+  )
+}
